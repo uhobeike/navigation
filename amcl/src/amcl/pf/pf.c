@@ -29,6 +29,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <time.h>
+#include <stdbool.h>
 
 #include "amcl/pf/pf.h"
 #include "amcl/pf/pf_pdf.h"
@@ -45,6 +46,8 @@ static int pf_resample_limit(pf_t *pf, int k);
 // Create a new filter
 pf_t *pf_alloc(int min_samples, int max_samples,
                double alpha_slow, double alpha_fast,
+               bool do_reset,
+               double alpha, double reset_th_cov,
                pf_init_model_fn_t random_pose_fn, void *random_pose_data)
 {
   int i, j;
@@ -107,6 +110,10 @@ pf_t *pf_alloc(int min_samples, int max_samples,
 
   pf->alpha_slow = alpha_slow;
   pf->alpha_fast = alpha_fast;
+
+  pf->do_reset = do_reset;
+  pf->alpha = alpha;
+  pf->reset_th_cov = reset_th_cov;
 
   //set converged to 0
   pf_init_converged(pf);
@@ -283,6 +290,8 @@ void pf_update_sensor(pf_t *pf, pf_sensor_model_fn_t sensor_fn, void *sensor_dat
   {
     // Normalize weights
     double w_avg=0.0;
+    double w_sum=0.0;
+    double w_sumv=0.0, w_v=0.0;
     for (i = 0; i < set->sample_count; i++)
     {
       sample = set->samples + i;
@@ -302,6 +311,67 @@ void pf_update_sensor(pf_t *pf, pf_sensor_model_fn_t sensor_fn, void *sensor_dat
       pf->w_fast += pf->alpha_fast * (w_avg - pf->w_fast);
     //printf("w_avg: %e slow: %e fast: %e\n", 
            //w_avg, pf->w_slow, pf->w_fast);
+    double beta = 1.0 - (w_sum / pf->alpha);
+    printf("beta : %lf w_sum : %lf pf->alpha : %lf\n", beta,w_sum,pf->alpha);
+    if(beta > 0.0 && w_v < pf->reset_th_cov && pf->do_reset){    //誘拐状態
+       double x_sum = 0.0, y_sum = 0.0, theta_sum = 0.0;		//パラメータの和
+       double x_sumv = 0.0, y_sumv = 0.0, theta_sumv = 0.0;	    //２乗和
+       double x_v = 0.0, y_v = 0.0, theta_v = 0.0;		        //分散
+       double v_limit = 20.0;					                //分散の制限
+       int limit = 0;
+       int reset_limit = 0, reset_count = 0;
+       printf("kidnapped\n");
+       pf_kdtree_clear(set->kdtree);
+       for (i = 0; i < set->sample_count; i++){
+           sample = set->samples + i;
+           x_sum += sample->pose.v[0];
+           x_sumv += sample->pose.v[0] * sample->pose.v[0];
+           y_sum += sample->pose.v[1];
+           y_sumv += sample->pose.v[1] * sample->pose.v[1];
+           theta_sum += sample->pose.v[2];
+           theta_sumv += sample->pose.v[2] * sample->pose.v[2];
+       }
+
+       x_v = (x_sumv - (x_sum * x_sum / set->sample_count)) / set->sample_count;
+       y_v = (y_sumv - (y_sum * y_sum / set->sample_count)) / set->sample_count;
+       theta_v = (theta_sumv - (theta_sum * theta_sum / set->sample_count)) / set->sample_count;
+       //分散の制限, オーバーフロー防止
+       if(x_v >= v_limit){
+           x_v = v_limit;
+       }
+       else if(x_v <= -v_limit){
+           x_v = -v_limit;
+       }
+
+       if(y_v >= v_limit){
+           y_v = v_limit;
+        }
+        else if(y_v <= -v_limit){
+            y_v = -v_limit;
+        }
+
+        if(theta_v >= M_PI/2){
+           theta_v = M_PI/2;
+        }
+        else if(theta_v <= -M_PI/2){
+            theta_v = -M_PI/2;
+        }
+
+        reset_limit = ((int)x_v + (int)y_v) / 2;
+        //分散の分だけ広げる
+        if(reset_count >= reset_limit){
+            for(i = 0; i < set->sample_count; i++){
+                sample = set->samples + i;
+                sample->pose.v[0] += (drand48() * 4 * x_v) - (2 * x_v);
+                sample->pose.v[1] += (drand48() * 4 * y_v) - (2 * y_v);
+                sample->pose.v[2] += (drand48() * 2 * theta_v) - (1 * theta_v);
+                sample->weight = 1.0 / set->sample_count;
+            }
+            reset_count = 0;
+            total = (*sensor_fn) (sensor_data, set);
+        }
+        reset_count++;
+    }
   }
   else
   {
@@ -745,6 +815,10 @@ int pf_get_cluster_stats(pf_t *pf, int clabel, double *weight,
   *cov = cluster->cov;
 
   return 1;
+}
+
+void pf_set_reset_flag(pf_t *pf, bool flag){
+  pf->do_reset = flag;
 }
 
 

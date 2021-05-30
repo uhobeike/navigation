@@ -140,12 +140,18 @@ typedef struct _pf_t
 
   // boolean parameter to enamble/diable selective resampling
   int selective_resampling;
+
+  // ER threshold
+  bool do_reset;
+  double alpha, reset_th_cov;
 } pf_t;
 
 
 // Create a new filter
 pf_t *pf_alloc(int min_samples, int max_samples,
                double alpha_slow, double alpha_fast,
+               bool do_reset,
+               double alpha, double reset_th_cov,
                pf_init_model_fn_t random_pose_fn, void *random_pose_data);
 
 // Free an existing filter
@@ -201,6 +207,8 @@ int pf_update_converged(pf_t *pf);
 void pf_init_converged(pf_t *pf);
 
 void pf_copy_set(pf_sample_set_t* set_a, pf_sample_set_t* set_b);
+
+void pf_set_reset_flag(pf_t *pf, bool flag);
 
 #ifdef __cplusplus
 }
